@@ -1,84 +1,86 @@
-// THE WORLD TODAY — Tuesday 24 November 2026
-// One picture that carries the whole day's world news, rendered end to
-// end by this program: a small software rasterizer, a hand-packed
-// bitmap typeface and a PNG writer built on Node's zlib. No image
-// assets, no network. Output lands in $MAKEFUN_OUTPUT_DIR/entry.png
-// (falling back to /output/entry.png).
+// 24 NOVEMBER IN ONE IMAGE — a poster, not a newspaper.
+// The whole day on one dark page: one giant headline, three hard
+// numbers, one symbolic picture, four one-line stories and a ticker.
+// Drawn entirely in code (own rasterizer, own bitmap typeface, own
+// PNG writer on Node's zlib). No assets, no network. The picture is
+// written to $MAKEFUN_OUTPUT_DIR/entry.png (fallback /output).
 
 import { deflateSync } from 'node:zlib';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// ---------- canvas ----------
-const PAGE_W = 1024;
-const PAGE_H = 1024;
-const raster = new Uint8Array(PAGE_W * PAGE_H * 3);
+// ----- stage -----
+const W = 1024;
+const H = 1024;
+const px3 = new Uint8Array(W * H * 3);
 
-const CREAM = [248, 243, 233];
-const SOOT = [24, 21, 16];
-const BODY_INK = [54, 49, 41];
-const EMBER = [198, 74, 22];
-const DAWN_HIGH = [250, 214, 160];
-const DAWN_LOW = [216, 112, 54];
-const GLOW = [238, 150, 84];
-const SUNSET = [206, 84, 36];
+const NIGHT = [16, 18, 26];
+const CARD = [26, 29, 40];
+const PAPER = [245, 244, 238];
+const SOFT = [208, 211, 219];
+const MUTED = [148, 153, 168];
+const EMBER = [255, 122, 26];
+const SEASKY = [13, 44, 56];
+const SEADEEP = [10, 62, 76];
+const ICE = [228, 241, 246];
+const ICE_SHADE = [178, 205, 216];
+const SUN = [255, 140, 40];
 
-const view = { left: 0, top: 0, right: PAGE_W, bottom: PAGE_H };
+let win = { x0: 0, y0: 0, x1: W, y1: H };
 
-function dot(x, y, ink, alpha = 1) {
+function put(x, y, col, a = 1) {
   const xi = Math.round(x);
   const yi = Math.round(y);
-  if (xi < view.left || yi < view.top || xi >= view.right || yi >= view.bottom) return;
-  if (xi < 0 || yi < 0 || xi >= PAGE_W || yi >= PAGE_H) return;
-  const at = (yi * PAGE_W + xi) * 3;
-  for (let ch = 0; ch < 3; ch++) raster[at + ch] = raster[at + ch] * (1 - alpha) + ink[ch] * alpha;
+  if (xi < win.x0 || yi < win.y0 || xi >= win.x1 || yi >= win.y1) return;
+  if (xi < 0 || yi < 0 || xi >= W || yi >= H) return;
+  const o = (yi * W + xi) * 3;
+  px3[o] = px3[o] + (col[0] - px3[o]) * a;
+  px3[o + 1] = px3[o + 1] + (col[1] - px3[o + 1]) * a;
+  px3[o + 2] = px3[o + 2] + (col[2] - px3[o + 2]) * a;
 }
 
-function bar(x, y, w, h, ink, alpha = 1) {
-  const yEnd = Math.round(y + h);
-  const xEnd = Math.round(x + w);
-  for (let yy = Math.round(y); yy < yEnd; yy++)
-    for (let xx = Math.round(x); xx < xEnd; xx++) dot(xx, yy, ink, alpha);
+function fill(x, y, w, h, col, a = 1) {
+  for (let yy = Math.round(y); yy < Math.round(y + h); yy++)
+    for (let xx = Math.round(x); xx < Math.round(x + w); xx++) put(xx, yy, col, a);
 }
 
-function disc(cx, cy, radius, ink, alpha = 1) {
-  const r2 = radius * radius;
-  for (let y = Math.floor(cy - radius - 1); y <= cy + radius + 1; y++)
-    for (let x = Math.floor(cx - radius - 1); x <= cx + radius + 1; x++) {
-      const d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
-      const cover = Math.min(1, Math.max(0, radius + 0.5 - Math.sqrt(d2)));
-      if (cover > 0 && d2 <= r2 + radius) dot(x, y, ink, alpha * cover);
+function ball(cx, cy, r, col, a = 1) {
+  for (let y = Math.floor(cy - r - 1); y <= cy + r + 1; y++)
+    for (let x = Math.floor(cx - r - 1); x <= cx + r + 1; x++) {
+      const d = Math.hypot(x - cx, y - cy);
+      const cov = Math.min(1, Math.max(0, r + 0.5 - d));
+      if (cov > 0) put(x, y, col, a * cov);
     }
 }
 
-function seg(xa, ya, xb, yb, thick, ink, alpha = 1) {
-  const steps = Math.max(Math.abs(xb - xa), Math.abs(yb - ya)) * 2 + 1;
-  for (let s = 0; s <= steps; s++) {
-    const t = s / steps;
-    disc(xa + (xb - xa) * t, ya + (yb - ya) * t, thick / 2, ink, alpha);
+function stroke(xa, ya, xb, yb, wdt, col, a = 1) {
+  const n = Math.max(Math.abs(xb - xa), Math.abs(yb - ya)) * 2 + 1;
+  for (let s = 0; s <= n; s++) {
+    const t = s / n;
+    ball(xa + (xb - xa) * t, ya + (yb - ya) * t, wdt / 2, col, a);
   }
 }
 
-function shape(points, ink, alpha = 1) {
-  const xs = points.map(p => p[0]);
-  const ys = points.map(p => p[1]);
+function polygon(pts, col, a = 1) {
+  const xs = pts.map(p => p[0]);
+  const ys = pts.map(p => p[1]);
   for (let y = Math.floor(Math.min(...ys)); y <= Math.max(...ys); y++)
     for (let x = Math.floor(Math.min(...xs)); x <= Math.max(...xs); x++) {
       let inside = false;
-      points.forEach((p, i) => {
-        const q = points[(i + 1) % points.length];
+      pts.forEach((p, i) => {
+        const q = pts[(i + 1) % pts.length];
         if ((p[1] > y) !== (q[1] > y) && x < ((q[0] - p[0]) * (y - p[1])) / (q[1] - p[1]) + p[0]) inside = !inside;
       });
-      if (inside) dot(x, y, ink, alpha);
+      if (inside) put(x, y, col, a);
     }
 }
 
-function blend(from, to, t) {
-  return from.map((v, i) => Math.round(v + (to[i] - v) * t));
+function mix(c1, c2, t) {
+  return c1.map((v, i) => Math.round(v + (c2[i] - v) * t));
 }
 
-// ---------- typeface: 5x7 glyphs stored as picture rows ----------
-const ROWS = {
+// ----- typeface: 5x7 glyphs as picture rows -----
+const GLYPH = {
   ' ': ['.....', '.....', '.....', '.....', '.....', '.....', '.....'],
   A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
   B: ['####.', '#...#', '#...#', '####.', '#...#', '#...#', '####.'],
@@ -121,229 +123,218 @@ const ROWS = {
   "'": ['..#..', '..#..', '.#...', '.....', '.....', '.....', '.....'],
   '-': ['.....', '.....', '.....', '#####', '.....', '.....', '.....'],
   ':': ['.....', '.##..', '.##..', '.....', '.##..', '.##..', '.....'],
-  ';': ['.....', '.##..', '.##..', '.....', '.##..', '..#..', '.#...'],
   '!': ['..#..', '..#..', '..#..', '..#..', '..#..', '.....', '..#..'],
   '?': ['.###.', '#...#', '....#', '...#.', '..#..', '.....', '..#..'],
-  '"': ['.#.#.', '.#.#.', '.#.#.', '.....', '.....', '.....', '.....'],
-  '(': ['...#.', '..#..', '.#...', '.#...', '.#...', '..#..', '...#.'],
-  ')': ['.#...', '..#..', '...#.', '...#.', '...#.', '..#..', '.#...'],
   '$': ['..#..', '.####', '#.#..', '.###.', '..#.#', '####.', '..#..'],
   '%': ['##...', '##..#', '...#.', '..#..', '.#...', '#..##', '...##'],
-  '&': ['.##..', '#..#.', '#.#..', '..#..', '#.#.#', '#..#.', '.#..#'],
-  '/': ['....#', '...#.', '...#.', '..#..', '.#...', '.#...', '#....'],
   '+': ['.....', '..#..', '..#..', '#####', '..#..', '..#..', '.....'],
-  '=': ['.....', '.....', '#####', '.....', '#####', '.....', '.....'],
-  '@': ['.###.', '#...#', '#.###', '#.#.#', '#.###', '#....', '.###.'],
+  '/': ['....#', '...#.', '...#.', '..#..', '.#...', '.#...', '#....'],
 };
 
-function stampGlyph(x, y, ch, size, ink, bold) {
-  if (ch === '—' || ch === '–') { bar(x, y + 3 * size, 5 * size, size, ink); return; }
-  const glyph = ROWS[ch] || ROWS['?'];
+function stamp(x, y, ch, size, col, bold) {
+  if (ch === '—' || ch === '–') { fill(x, y + 3 * size, 5 * size, size, col); return; }
+  const g = GLYPH[ch] || GLYPH['?'];
   const extra = bold ? Math.max(1, Math.round(size / 3)) : 0;
-  glyph.forEach((row, r) => {
-    [...row].forEach((cell, col) => {
+  g.forEach((row, r) => {
+    [...row].forEach((cell, c) => {
       if (cell === '#') {
-        bar(x + col * size, y + r * size, size, size, ink);
-        if (extra) bar(x + col * size + extra, y + r * size, size, size, ink);
+        fill(x + c * size, y + r * size, size, size, col);
+        if (extra) fill(x + c * size + extra, y + r * size, size, size, col);
       }
     });
   });
 }
 
-function measure(text, size, tracking = 0) {
+function widthOf(text, size, tracking = 0) {
   return text.length * (6 * size + tracking) - size - tracking;
 }
 
-function printLine(x, y, text, size, ink, opts = {}) {
-  const upper = text.toUpperCase();
+function type(x, y, text, size, col, opts = {}) {
+  const s = text.toUpperCase();
   const tracking = opts.tracking || 0;
   let pen = x;
-  if (opts.align === 'center') pen = Math.round((PAGE_W - measure(upper, size, tracking)) / 2);
-  if (opts.align === 'right') pen = x - measure(upper, size, tracking);
-  for (const ch of upper) {
-    stampGlyph(pen, y, ch, size, ink, opts.bold);
-    pen += 6 * size + tracking;
-  }
+  if (opts.align === 'center') pen = Math.round((W - widthOf(s, size, tracking)) / 2);
+  if (opts.align === 'right') pen = x - widthOf(s, size, tracking);
+  for (const ch of s) { stamp(pen, y, ch, size, col, opts.bold); pen += 6 * size + tracking; }
   return 7 * size;
 }
 
-function fold(text, maxChars) {
-  const out = [];
-  let current = '';
+function foldText(text, maxChars) {
+  const lines = [];
+  let cur = '';
   for (const word of text.split(' ')) {
-    const trial = current ? current + ' ' + word : word;
-    if (trial.length > maxChars && current) { out.push(current); current = word; }
-    else current = trial;
+    const trial = cur ? cur + ' ' + word : word;
+    if (trial.length > maxChars && cur) { lines.push(cur); cur = word; }
+    else cur = trial;
   }
-  if (current) out.push(current);
-  return out;
+  if (cur) lines.push(cur);
+  return lines;
 }
 
-function printPara(x, y, text, size, ink, maxChars, leading, opts = {}) {
-  const lines = fold(text, maxChars);
-  lines.forEach((ln, i) => printLine(x, y + i * leading, ln, size, ink, opts));
+function para(x, y, text, size, col, maxChars, leading, opts = {}) {
+  const lines = foldText(text, maxChars);
+  lines.forEach((ln, i) => type(x, y + i * leading, ln, size, col, opts));
   return lines.length * leading;
 }
 
-// ---------- page furniture ----------
-bar(0, 0, PAGE_W, PAGE_H, CREAM);
-const EDGE = 44;
-const SPAN = PAGE_W - 2 * EDGE;
+// ----- the poster -----
+fill(0, 0, W, H, NIGHT);
+const L = 48;
+const R = W - 48;
+const CW = R - L; // 928
 
-printLine(0, 30, 'THE WORLD TODAY', 10, SOOT, { align: 'center', bold: true, tracking: 3 });
-bar(EDGE, 110, SPAN, 5, EMBER);
-bar(EDGE, 119, SPAN, 2, SOOT);
-printLine(0, 130, 'TUESDAY 24 NOVEMBER 2026', 3, SOOT, { align: 'center', bold: true });
-printLine(EDGE, 132, 'ONE DAY, ONE IMAGE', 2, BODY_INK);
-printLine(PAGE_W - EDGE, 132, 'EST. 2026', 2, BODY_INK, { align: 'right' });
-bar(EDGE, 160, SPAN, 1, SOOT);
+// header strip
+type(L, 38, 'TUESDAY 24 NOVEMBER 2026', 3, PAPER, { bold: true, tracking: 2 });
+type(R, 44, 'ONE IMAGE, THE WHOLE DAY', 2, MUTED, { align: 'right' });
+fill(L, 88, CW, 4, EMBER);
 
-// ---------- the lead: COP31 ends without a deal ----------
-printLine(EDGE, 174, 'CLIMATE — COP31, ANTALYA', 3, EMBER, { bold: true });
-printLine(EDGE, 202, 'COP31 TALKS COLLAPSE', 7, SOOT, { bold: true });
-printLine(EDGE, 260, 'WITHOUT A DEAL', 7, SOOT, { bold: true });
+// kicker + giant headline
+type(L, 116, 'CLIMATE SUMMIT — ANTALYA', 3, EMBER, { bold: true, tracking: 2 });
+type(L, 152, 'COP31 TALKS', 12, PAPER, { bold: true });
+type(L, 248, 'COLLAPSE', 16, EMBER, { bold: true });
 
-// ---------- lead illustration: dusk over the Antalya skyline ----------
-// The sun hangs low and split; the summit's pennants hang limp.
-const ART = { x: EDGE, y: 330, w: SPAN, h: 196 };
-Object.assign(view, { left: ART.x, top: ART.y, right: ART.x + ART.w, bottom: ART.y + ART.h });
+// three hard numbers
+const stats = [
+  ['50H', 'OF OVERTIME TALKS'],
+  ['90+', 'NATIONS REJECT THE TEXT'],
+  ['0', 'MENTIONS OF FOSSIL FUELS'],
+];
+stats.forEach(([num, label], i) => {
+  const sx = L + i * 312;
+  type(sx, 386, num, 6, PAPER, { bold: true });
+  type(sx, 436, label, 2, MUTED);
+  if (i > 0) fill(sx - 28, 390, 2, 62, [52, 57, 72]);
+});
+
+// ----- illustration: one ice shelf, splitting in two -----
+const ART = { x: L, y: 486, w: CW, h: 238 };
+win = { x0: ART.x, y0: ART.y, x1: ART.x + ART.w, y1: ART.y + ART.h };
 for (let row = 0; row < ART.h; row++)
-  bar(ART.x, ART.y + row, ART.w, 1, blend(DAWN_HIGH, DAWN_LOW, Math.min(1, row / (ART.h * 0.85))));
-const sunCx = ART.x + ART.w * 0.66;
-const sunCy = ART.y + ART.h * 0.74;
-const sunR = ART.h * 0.34;
-disc(sunCx, sunCy, sunR * 1.55, GLOW, 0.30);
-disc(sunCx, sunCy, sunR, SUNSET);
-const crackPath = [[30, -26], [210, -8], [330, -30], [470, 2], [590, -22], [730, 6], [850, -14], [912, 4]];
-for (let i = 0; i + 1 < crackPath.length; i++)
-  seg(ART.x + crackPath[i][0], sunCy + crackPath[i][1], ART.x + crackPath[i + 1][0], sunCy + crackPath[i + 1][1], 5, SOOT, 0.85);
-const horizon = ART.y + ART.h * 0.86;
-const towers = [[0, 70, 40], [66, 46, 60], [108, 84, 33], [188, 40, 76], [224, 96, 47], [316, 52, 63],
-  [364, 120, 38], [480, 56, 83], [532, 88, 43], [616, 44, 56], [656, 110, 35], [762, 58, 67], [816, 120, 42]];
-for (const [off, wdt, hgt] of towers) bar(ART.x + off, horizon - hgt, wdt, hgt, SOOT);
-disc(ART.x + 428, horizon - 38, 27, SOOT);              // the conference dome
-bar(ART.x + 424, horizon - 86, 8, 48, SOOT);            // its spire
-for (const minaret of [206, 700]) {                     // two minarets
-  bar(ART.x + minaret, horizon - 116, 9, 116, SOOT);
-  shape([[ART.x + minaret - 5, horizon - 116], [ART.x + minaret + 14, horizon - 116], [ART.x + minaret + 4.5, horizon - 138]], SOOT);
+  fill(ART.x, ART.y + row, ART.w, 1, mix(SEASKY, SEADEEP, row / ART.h));
+const midX = ART.x + ART.w / 2;
+const seaY = ART.y + 148;
+ball(midX, seaY - 24, 56, SUN, 0.22);                   // glow behind the gap
+ball(midX, seaY - 24, 36, SUN);                         // low sun in the crack
+// left berg
+polygon([[ART.x + 18, seaY + 66], [ART.x + 30, seaY - 58], [ART.x + 96, seaY - 88], [ART.x + 190, seaY - 66],
+  [ART.x + 268, seaY - 92], [ART.x + 356, seaY - 60], [ART.x + 402, seaY - 30], [ART.x + 388, seaY + 66]], ICE);
+polygon([[ART.x + 30, seaY - 58], [ART.x + 96, seaY - 88], [ART.x + 190, seaY - 66], [ART.x + 150, seaY - 34],
+  [ART.x + 84, seaY - 28], [ART.x + 40, seaY - 36]], ICE_SHADE, 0.55);
+// right berg
+polygon([[ART.x + ART.w - 18, seaY + 66], [ART.x + ART.w - 34, seaY - 52], [ART.x + ART.w - 110, seaY - 84],
+  [ART.x + ART.w - 204, seaY - 62], [ART.x + ART.w - 276, seaY - 90], [ART.x + ART.w - 362, seaY - 56],
+  [ART.x + ART.w - 404, seaY - 26], [ART.x + ART.w - 390, seaY + 66]], ICE);
+polygon([[ART.x + ART.w - 34, seaY - 52], [ART.x + ART.w - 110, seaY - 84], [ART.x + ART.w - 204, seaY - 62],
+  [ART.x + ART.w - 160, seaY - 30], [ART.x + ART.w - 92, seaY - 26], [ART.x + ART.w - 46, seaY - 34]], ICE_SHADE, 0.55);
+// fracture lines on both bergs
+for (const [xa, ya, xb, yb] of [[70, -70, 104, -30], [104, -30, 88, 8], [240, -78, 262, -38], [262, -38, 244, 2]])
+  stroke(ART.x + xa, seaY + ya, ART.x + xb, seaY + yb, 3, ICE_SHADE);
+for (const [xa, ya, xb, yb] of [[-80, -66, -112, -28], [-112, -28, -96, 10], [-250, -74, -272, -36], [-272, -36, -254, 4]])
+  stroke(ART.x + ART.w + xa, seaY + ya, ART.x + ART.w + xb, seaY + yb, 3, ICE_SHADE);
+// waterline shading along both berg bases
+fill(ART.x + 18, seaY + 34, 370, 32, ICE_SHADE, 0.30);
+fill(ART.x + ART.w - 388, seaY + 34, 370, 32, ICE_SHADE, 0.30);
+// chunks calving into the water beside the gap
+polygon([[midX - 62, seaY + 44], [midX - 46, seaY + 24], [midX - 30, seaY + 42]], ICE);
+polygon([[midX + 34, seaY + 52], [midX + 48, seaY + 34], [midX + 60, seaY + 50]], ICE_SHADE);
+// water: surface line + drifting streaks
+fill(ART.x, seaY + 66, ART.w, 3, ICE_SHADE, 0.8);
+for (let s = 0; s < 26; s++) {
+  const sx = ART.x + 24 + ((s * 173) % (ART.w - 90));
+  const sy = seaY + 82 + ((s * 37) % 56);
+  fill(sx, sy, 18 + (s % 4) * 9, 2, ICE_SHADE, 0.35);
 }
-bar(ART.x, horizon, ART.w, ART.y + ART.h - horizon, SOOT);   // foreground band
-for (let f = 0; f < 9; f++) {                                // limp pennants
-  const pole = ART.x + 60 + f * 102;
-  seg(pole, horizon + 6, pole, horizon + 27, 3, CREAM);
-  shape([[pole, horizon + 6], [pole + 15, horizon + 8], [pole + 3, horizon + 17]], f % 2 ? CREAM : EMBER);
-}
-Object.assign(view, { left: 0, top: 0, right: PAGE_W, bottom: PAGE_H });
-bar(ART.x, ART.y, ART.w, 2, SOOT); bar(ART.x, ART.y + ART.h - 2, ART.w, 2, SOOT);
-bar(ART.x, ART.y, 2, ART.h, SOOT); bar(ART.x + ART.w - 2, ART.y, 2, ART.h, SOOT);
+win = { x0: 0, y0: 0, x1: W, y1: H };
+fill(ART.x, ART.y, ART.w, 2, [52, 57, 72]); fill(ART.x, ART.y + ART.h - 2, ART.w, 2, [52, 57, 72]);
+fill(ART.x, ART.y, 2, ART.h, [52, 57, 72]); fill(ART.x + ART.w - 2, ART.y, 2, ART.h, [52, 57, 72]);
 
-// ---------- lead summary ----------
-printPara(EDGE, 542,
-  "TALKS RAN NEARLY 50 HOURS INTO OVERTIME, THE LONGEST IN COP HISTORY. THEN MORE THAN 90 NATIONS REJECTED A FINAL TEXT THAT NEVER MENTIONED FOSSIL FUELS, AND THE SUMMIT ENDED WITH NO DEAL — WHAT GRIST CALLED CLIMATE DIPLOMACY'S DARKEST MOMENT.",
-  2, BODY_INK, 76, 17);
-bar(EDGE, 618, SPAN, 2, SOOT);
-
-// ---------- story cards ----------
+// ----- four one-line stories -----
 function emblem(kind, x, y) {
   if (kind === 'ship') {
-    shape([[x + 2, y + 13], [x + 30, y + 13], [x + 25, y + 20], [x + 7, y + 20]], EMBER);
-    bar(x + 9, y + 7, 14, 6, EMBER);
-    bar(x + 20, y + 2, 3, 5, SOOT);
-    for (const dash of [2, 13, 24]) seg(x + dash, y + 23, x + dash + 7, y + 23, 2, SOOT);
+    polygon([[x + 2, y + 13], [x + 30, y + 13], [x + 25, y + 20], [x + 7, y + 20]], EMBER);
+    fill(x + 9, y + 7, 14, 6, EMBER);
+    fill(x + 20, y + 2, 3, 5, PAPER);
   } else if (kind === 'star') {
-    const points = [];
+    const pts = [];
     for (let i = 0; i < 10; i++) {
       const ang = -Math.PI / 2 + (i * Math.PI) / 5;
       const rad = i % 2 === 0 ? 11 : 4.6;
-      points.push([x + 16 + Math.cos(ang) * rad, y + 10 + Math.sin(ang) * rad]);
+      pts.push([x + 16 + Math.cos(ang) * rad, y + 10 + Math.sin(ang) * rad]);
     }
-    shape(points, EMBER);
+    polygon(pts, EMBER);
   } else if (kind === 'alert') {
     const zig = [[0, 12], [6, 12], [10, 3], [15, 17], [19, 7], [23, 12], [32, 12]];
-    for (let i = 0; i + 1 < zig.length; i++) seg(x + zig[i][0], y + zig[i][1], x + zig[i + 1][0], y + zig[i + 1][1], 3, EMBER);
-    seg(x, y + 20, x + 32, y + 20, 2, SOOT);
+    for (let i = 0; i + 1 < zig.length; i++) stroke(x + zig[i][0], y + zig[i][1], x + zig[i + 1][0], y + zig[i + 1][1], 3, EMBER);
   } else if (kind === 'chip') {
-    bar(x + 7, y + 3, 18, 17, SOOT);
-    bar(x + 11, y + 7, 10, 9, CREAM);
+    fill(x + 7, y + 3, 18, 17, PAPER);
+    fill(x + 11, y + 7, 10, 9, CARD);
     for (const o of [0, 6, 12]) {
-      bar(x + 2, y + 5 + o, 5, 2, EMBER); bar(x + 25, y + 5 + o, 5, 2, EMBER);
-      bar(x + 10 + o, y, 2, 3, EMBER); bar(x + 10 + o, y + 20, 2, 3, EMBER);
+      fill(x + 2, y + 5 + o, 5, 2, EMBER); fill(x + 25, y + 5 + o, 5, 2, EMBER);
+      fill(x + 10 + o, y, 2, 3, EMBER); fill(x + 10 + o, y + 20, 2, 3, EMBER);
     }
-  } else if (kind === 'globe') {
-    disc(x + 16, y + 11, 10, SOOT);
-    disc(x + 16, y + 11, 8, CREAM);
-    seg(x + 8, y + 11, x + 24, y + 11, 2, EMBER);
-    seg(x + 16, y + 3, x + 16, y + 19, 2, EMBER);
-    seg(x + 10, y + 6, x + 22, y + 6, 1, EMBER); seg(x + 10, y + 16, x + 22, y + 16, 1, EMBER);
   }
 }
 
-function card(x, y, w, h, label, headline, summary, kind) {
-  bar(x, y, w, 2, SOOT); bar(x, y + h - 2, w, 2, SOOT);
-  bar(x, y, 2, h, SOOT); bar(x + w - 2, y, 2, h, SOOT);
-  printLine(x + 12, y + 11, label, 2, EMBER, { bold: true });
-  emblem(kind, x + w - 46, y + 8);
-  const headH = printPara(x + 12, y + 30, headline, 3, SOOT, Math.floor((w - 24) / 18), 26, { bold: true });
-  printPara(x + 12, y + 30 + headH + 4, summary, 2, BODY_INK, Math.floor((w - 24) / 12), 16);
-}
-
-const topRowY = 632;
-card(EDGE, topRowY, 460, 170, 'WAR AT SEA — LIBYA', "UKRAINE SINKS RUSSIAN CORVETTE AT BENGHAZI",
-  "SEVEN NAVAL DRONES SANK THE CORVETTE MERKURY AT BENGHAZI NAVAL BASE, OPENING A MEDITERRANEAN FRONT. THE UN SEEKS A PROBE AND WARNS LIBYA MUST NOT BECOME A BATTLEGROUND.", 'ship');
-card(EDGE + 476, topRowY, 460, 170, 'MIDDLE EAST — IRAN', "TRUMP WARNS IRAN OF 'TRAUMATIC' OUTCOME",
-  "TRUMP WEIGHS SENDING A SECOND AIRCRAFT CARRIER AS NUCLEAR TALKS STALL, WHILE BRITAIN LOGS RECORD IRANIAN ATTACKS IN THE STRAIT OF HORMUZ AND QATAR MEDIATES.", 'star');
-
-const lowRowY = 814;
-const lowRow = [
-  ['NATO — EUROPE', '25 RUSSIAN AIRSPACE VIOLATIONS', 'IN 2026. MISSILES AND A DRONE CRASHED IN POLAND.', 'alert'],
-  ['TECH — NVIDIA', 'HUANG BACK AT NVIDIA', 'REINSTATED AFTER TRUMP INTERVENED; SK HYNIX SHARES JUMP 20%.', 'chip'],
-  ['TRADE — INDONESIA', 'TRUMP SEALS INDONESIA DEAL', 'EU THREATENS $84 BILLION IN TARIFF RETALIATION AS TALKS STALL.', 'globe'],
+const tiles = [
+  ['LIBYA', 'UKRAINE SINKS RUSSIAN CORVETTE AT BENGHAZI', 'ship'],
+  ['IRAN', "TRUMP WARNS IRAN OF A 'TRAUMATIC' OUTCOME", 'star'],
+  ['NATO', 'RUSSIA BREAKS NATO AIRSPACE 25 TIMES', 'alert'],
+  ['TECH', 'NVIDIA CHIEF BACK AFTER TRUMP STEPS IN', 'chip'],
 ];
-lowRow.forEach(([label, headline, summary, kind], i) =>
-  card(EDGE + i * 317, lowRowY, 302, 164, label, headline, summary, kind));
+const TILE_Y = 752;
+const TILE_W = 220;
+tiles.forEach(([label, headline, kind], i) => {
+  const tx = L + i * (TILE_W + 16);
+  fill(tx, TILE_Y, TILE_W, 168, CARD);
+  fill(tx, TILE_Y, TILE_W, 4, EMBER);
+  type(tx + 14, TILE_Y + 16, label, 2, EMBER, { bold: true });
+  emblem(kind, tx + TILE_W - 48, TILE_Y + 12);
+  para(tx + 14, TILE_Y + 48, headline, 2, PAPER, 17, 23, { bold: true });
+});
 
-// ---------- footer ----------
-bar(EDGE, 990, SPAN, 1, SOOT);
-printLine(0, 998, "DRAWN BY AN AI AGENT FROM THE DAY'S WIRES", 2, BODY_INK, { align: 'center' });
+// ----- ticker + signature -----
+fill(L, 946, 10, 10, EMBER);
+type(0, 942, 'ALSO TODAY: TRUMP SEALS INDONESIA TRADE DEAL — EU THREATENS $84B IN TARIFFS', 2, SOFT, { align: 'center' });
+fill(R - 10, 946, 10, 10, EMBER);
+type(0, 984, 'DRAWN BY AN AI AGENT FROM THE DAY\'S WIRES', 1, MUTED, { align: 'center' });
 
-// ---------- PNG writer ----------
-const crcTable = [];
+// ----- PNG writer -----
+const table = [];
 for (let n = 0; n < 256; n++) {
   let c = n;
   for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
-  crcTable.push(c);
+  table.push(c);
 }
-function crcOf(buf) {
+function crc(buf) {
   let c = 0xFFFFFFFF;
-  for (const byte of buf) c = crcTable[(c ^ byte) & 0xFF] ^ (c >>> 8);
+  for (const b of buf) c = table[(c ^ b) & 0xFF] ^ (c >>> 8);
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
-function pngChunk(name, payload) {
-  const size = Buffer.alloc(4);
-  size.writeUInt32BE(payload.length);
+function chunkOf(name, payload) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(payload.length);
   const named = Buffer.concat([Buffer.from(name, 'ascii'), payload]);
-  const check = Buffer.alloc(4);
-  check.writeUInt32BE(crcOf(named));
-  return Buffer.concat([size, named, check]);
+  const chk = Buffer.alloc(4);
+  chk.writeUInt32BE(crc(named));
+  return Buffer.concat([len, named, chk]);
 }
-const header = Buffer.alloc(13);
-header.writeUInt32BE(PAGE_W, 0);
-header.writeUInt32BE(PAGE_H, 4);
-header[8] = 8;   // bit depth
-header[9] = 2;   // truecolor RGB
-const scanlines = Buffer.alloc((PAGE_W * 3 + 1) * PAGE_H);
-for (let y = 0; y < PAGE_H; y++) {
-  const rowStart = y * (PAGE_W * 3 + 1);
-  scanlines[rowStart] = 0; // filter: none
-  Buffer.from(raster.buffer, y * PAGE_W * 3, PAGE_W * 3).copy(scanlines, rowStart + 1);
+const ihdr = Buffer.alloc(13);
+ihdr.writeUInt32BE(W, 0);
+ihdr.writeUInt32BE(H, 4);
+ihdr[8] = 8;
+ihdr[9] = 2;
+const rows = Buffer.alloc((W * 3 + 1) * H);
+for (let y = 0; y < H; y++) {
+  rows[y * (W * 3 + 1)] = 0;
+  Buffer.from(px3.buffer, y * W * 3, W * 3).copy(rows, y * (W * 3 + 1) + 1);
 }
-const pngBytes = Buffer.concat([
+const out = Buffer.concat([
   Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-  pngChunk('IHDR', header),
-  pngChunk('IDAT', deflateSync(scanlines, { level: 9 })),
-  pngChunk('IEND', Buffer.alloc(0)),
+  chunkOf('IHDR', ihdr),
+  chunkOf('IDAT', deflateSync(rows, { level: 9 })),
+  chunkOf('IEND', Buffer.alloc(0)),
 ]);
-const targetDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-mkdirSync(targetDir, { recursive: true });
-writeFileSync(join(targetDir, 'entry.png'), pngBytes);
-console.log('wrote', join(targetDir, 'entry.png'), pngBytes.length, 'bytes');
+const dir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+mkdirSync(dir, { recursive: true });
+writeFileSync(join(dir, 'entry.png'), out);
+console.log('wrote', join(dir, 'entry.png'), out.length, 'bytes');
