@@ -1,312 +1,349 @@
 // THE WORLD TODAY — Tuesday 24 November 2026
-// A one-image broadsheet of the day's world news, drawn entirely in code.
-// Node standard library only: own rasterizer, own 5x7 bitmap font, own PNG
-// encoder (zlib). Writes entry.png into $MAKEFUN_OUTPUT_DIR (or /output).
+// One picture that carries the whole day's world news, rendered end to
+// end by this program: a small software rasterizer, a hand-packed
+// bitmap typeface and a PNG writer built on Node's zlib. No image
+// assets, no network. Output lands in $MAKEFUN_OUTPUT_DIR/entry.png
+// (falling back to /output/entry.png).
 
 import { deflateSync } from 'node:zlib';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const W = 1024;
-const H = 1024;
-const img = new Uint8Array(W * H * 3);
+// ---------- canvas ----------
+const PAGE_W = 1024;
+const PAGE_H = 1024;
+const raster = new Uint8Array(PAGE_W * PAGE_H * 3);
 
-const PAPER = [248, 243, 233];
-const INK = [24, 21, 16];
-const BODY = [54, 49, 41];
-const ACCENT = [198, 74, 22];
-const SKY_TOP = [250, 214, 160];
-const SKY_LOW = [216, 112, 54];
-const HALO = [238, 150, 84];
-const SUN = [206, 84, 36];
+const CREAM = [248, 243, 233];
+const SOOT = [24, 21, 16];
+const BODY_INK = [54, 49, 41];
+const EMBER = [198, 74, 22];
+const DAWN_HIGH = [250, 214, 160];
+const DAWN_LOW = [216, 112, 54];
+const GLOW = [238, 150, 84];
+const SUNSET = [206, 84, 36];
 
-let clip = { x0: 0, y0: 0, x1: W, y1: H };
+const view = { left: 0, top: 0, right: PAGE_W, bottom: PAGE_H };
 
-function px(x, y, c, a = 1) {
-  x = Math.round(x); y = Math.round(y);
-  if (x < clip.x0 || y < clip.y0 || x >= clip.x1 || y >= clip.y1) return;
-  if (x < 0 || y < 0 || x >= W || y >= H) return;
-  const i = (y * W + x) * 3;
-  img[i] = img[i] * (1 - a) + c[0] * a;
-  img[i + 1] = img[i + 1] * (1 - a) + c[1] * a;
-  img[i + 2] = img[i + 2] * (1 - a) + c[2] * a;
+function dot(x, y, ink, alpha = 1) {
+  const xi = Math.round(x);
+  const yi = Math.round(y);
+  if (xi < view.left || yi < view.top || xi >= view.right || yi >= view.bottom) return;
+  if (xi < 0 || yi < 0 || xi >= PAGE_W || yi >= PAGE_H) return;
+  const at = (yi * PAGE_W + xi) * 3;
+  for (let ch = 0; ch < 3; ch++) raster[at + ch] = raster[at + ch] * (1 - alpha) + ink[ch] * alpha;
 }
 
-function rect(x, y, w, h, c, a = 1) {
-  for (let yy = Math.round(y); yy < Math.round(y + h); yy++)
-    for (let xx = Math.round(x); xx < Math.round(x + w); xx++) px(xx, yy, c, a);
+function bar(x, y, w, h, ink, alpha = 1) {
+  const yEnd = Math.round(y + h);
+  const xEnd = Math.round(x + w);
+  for (let yy = Math.round(y); yy < yEnd; yy++)
+    for (let xx = Math.round(x); xx < xEnd; xx++) dot(xx, yy, ink, alpha);
 }
 
-function circle(cx, cy, r, c, a = 1) {
-  for (let y = Math.floor(cy - r - 1); y <= cy + r + 1; y++)
-    for (let x = Math.floor(cx - r - 1); x <= cx + r + 1; x++) {
-      const d = Math.hypot(x - cx, y - cy);
-      const cov = Math.min(1, Math.max(0, r + 0.5 - d));
-      if (cov > 0) px(x, y, c, a * cov);
+function disc(cx, cy, radius, ink, alpha = 1) {
+  const r2 = radius * radius;
+  for (let y = Math.floor(cy - radius - 1); y <= cy + radius + 1; y++)
+    for (let x = Math.floor(cx - radius - 1); x <= cx + radius + 1; x++) {
+      const d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+      const cover = Math.min(1, Math.max(0, radius + 0.5 - Math.sqrt(d2)));
+      if (cover > 0 && d2 <= r2 + radius) dot(x, y, ink, alpha * cover);
     }
 }
 
-function line(x0, y0, x1, y1, wdt, c, a = 1) {
-  const dx = x1 - x0, dy = y1 - y0;
-  const len = Math.hypot(dx, dy) || 1;
-  const pad = wdt / 2 + 1;
-  for (let y = Math.floor(Math.min(y0, y1) - pad); y <= Math.max(y0, y1) + pad; y++)
-    for (let x = Math.floor(Math.min(x0, x1) - pad); x <= Math.max(x0, x1) + pad; x++) {
-      const t = Math.min(1, Math.max(0, ((x - x0) * dx + (y - y0) * dy) / (len * len)));
-      const d = Math.hypot(x - (x0 + t * dx), y - (y0 + t * dy));
-      const cov = Math.min(1, Math.max(0, wdt / 2 + 0.5 - d));
-      if (cov > 0) px(x, y, c, a * cov);
-    }
-}
-
-function poly(pts, c, a = 1) {
-  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
-  const x0 = Math.floor(Math.min(...xs)), x1 = Math.ceil(Math.max(...xs));
-  const y0 = Math.floor(Math.min(...ys)), y1 = Math.ceil(Math.max(...ys));
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-    let inside = false;
-    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-      const [xi, yi] = pts[i], [xj, yj] = pts[j];
-      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-    }
-    if (inside) px(x, y, c, a);
+function seg(xa, ya, xb, yb, thick, ink, alpha = 1) {
+  const steps = Math.max(Math.abs(xb - xa), Math.abs(yb - ya)) * 2 + 1;
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    disc(xa + (xb - xa) * t, ya + (yb - ya) * t, thick / 2, ink, alpha);
   }
 }
 
-function lerp(c1, c2, t) {
-  return [0, 1, 2].map(i => Math.round(c1[i] * (1 - t) + c2[i] * t));
+function shape(points, ink, alpha = 1) {
+  const xs = points.map(p => p[0]);
+  const ys = points.map(p => p[1]);
+  for (let y = Math.floor(Math.min(...ys)); y <= Math.max(...ys); y++)
+    for (let x = Math.floor(Math.min(...xs)); x <= Math.max(...xs); x++) {
+      let inside = false;
+      points.forEach((p, i) => {
+        const q = points[(i + 1) % points.length];
+        if ((p[1] > y) !== (q[1] > y) && x < ((q[0] - p[0]) * (y - p[1])) / (q[1] - p[1]) + p[0]) inside = !inside;
+      });
+      if (inside) dot(x, y, ink, alpha);
+    }
 }
 
-// ---- 5x7 bitmap font (rows top to bottom, 5 bits per row, LSB = left) ----
-const FONT = {
-  ' ': [0, 0, 0, 0, 0, 0, 0],
-  'A': [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11], 'B': [0x0F, 0x11, 0x11, 0x0F, 0x11, 0x11, 0x0F],
-  'C': [0x0E, 0x11, 0x01, 0x01, 0x01, 0x11, 0x0E], 'D': [0x0F, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0F],
-  'E': [0x1F, 0x01, 0x01, 0x0F, 0x01, 0x01, 0x1F], 'F': [0x1F, 0x01, 0x01, 0x0F, 0x01, 0x01, 0x01],
-  'G': [0x0E, 0x11, 0x01, 0x1D, 0x11, 0x11, 0x1E], 'H': [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
-  'I': [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E], 'J': [0x1C, 0x08, 0x08, 0x08, 0x08, 0x09, 0x06],
-  'K': [0x11, 0x09, 0x05, 0x03, 0x05, 0x09, 0x11], 'L': [0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x1F],
-  'M': [0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11], 'N': [0x11, 0x13, 0x15, 0x19, 0x11, 0x11, 0x11],
-  'O': [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E], 'P': [0x1E, 0x11, 0x11, 0x1E, 0x01, 0x01, 0x01],
-  'Q': [0x0E, 0x11, 0x11, 0x11, 0x15, 0x09, 0x16], 'R': [0x1E, 0x11, 0x11, 0x1E, 0x05, 0x09, 0x11],
-  'S': [0x1E, 0x01, 0x01, 0x0E, 0x10, 0x10, 0x0F], 'T': [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
-  'U': [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E], 'V': [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
-  'W': [0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11], 'X': [0x11, 0x0A, 0x04, 0x04, 0x04, 0x0A, 0x11],
-  'Y': [0x11, 0x0A, 0x04, 0x04, 0x04, 0x04, 0x04], 'Z': [0x1F, 0x10, 0x08, 0x04, 0x02, 0x01, 0x1F],
-  '0': [0x0E, 0x11, 0x19, 0x15, 0x13, 0x11, 0x0E], '1': [0x04, 0x06, 0x04, 0x04, 0x04, 0x04, 0x0E],
-  '2': [0x0E, 0x11, 0x10, 0x08, 0x04, 0x02, 0x1F], '3': [0x0E, 0x11, 0x10, 0x0C, 0x10, 0x11, 0x0E],
-  '4': [0x08, 0x0C, 0x0A, 0x09, 0x1F, 0x08, 0x08], '5': [0x1F, 0x01, 0x0F, 0x10, 0x10, 0x11, 0x0E],
-  '6': [0x0C, 0x02, 0x01, 0x0F, 0x11, 0x11, 0x0E], '7': [0x1F, 0x10, 0x08, 0x04, 0x02, 0x02, 0x02],
-  '8': [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E], '9': [0x0E, 0x11, 0x11, 0x1E, 0x10, 0x08, 0x06],
-  '.': [0, 0, 0, 0, 0, 0x0C, 0x0C], ',': [0, 0, 0, 0, 0x0C, 0x04, 0x08],
-  "'": [0x04, 0x04, 0x02, 0, 0, 0, 0], '-': [0, 0, 0, 0x1F, 0, 0, 0],
-  ':': [0, 0x0C, 0x0C, 0, 0x0C, 0x0C, 0], ';': [0, 0x0C, 0x0C, 0, 0x0C, 0x04, 0x08],
-  '!': [0x04, 0x04, 0x04, 0x04, 0x04, 0, 0x04], '?': [0x0E, 0x11, 0x10, 0x08, 0x04, 0, 0x04],
-  '"': [0x0A, 0x0A, 0x0A, 0, 0, 0, 0], '(': [0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08],
-  ')': [0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02], '$': [0x04, 0x0F, 0x05, 0x0E, 0x14, 0x0F, 0x04],
-  '%': [0x03, 0x13, 0x08, 0x04, 0x02, 0x19, 0x18], '&': [0x06, 0x09, 0x05, 0x02, 0x15, 0x09, 0x16],
-  '/': [0x10, 0x08, 0x08, 0x04, 0x02, 0x02, 0x01], '+': [0, 0x04, 0x04, 0x1F, 0x04, 0x04, 0],
-  '=': [0, 0x1F, 0, 0x1F, 0, 0], '@': [0x0E, 0x11, 0x17, 0x15, 0x17, 0x10, 0x0E],
+function blend(from, to, t) {
+  return from.map((v, i) => Math.round(v + (to[i] - v) * t));
+}
+
+// ---------- typeface: 5x7 glyphs stored as picture rows ----------
+const ROWS = {
+  ' ': ['.....', '.....', '.....', '.....', '.....', '.....', '.....'],
+  A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  B: ['####.', '#...#', '#...#', '####.', '#...#', '#...#', '####.'],
+  C: ['.###.', '#...#', '#....', '#....', '#....', '#...#', '.###.'],
+  D: ['####.', '#...#', '#...#', '#...#', '#...#', '#...#', '####.'],
+  E: ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
+  F: ['#####', '#....', '#....', '####.', '#....', '#....', '#....'],
+  G: ['.###.', '#...#', '#....', '#.###', '#...#', '#...#', '.###.'],
+  H: ['#...#', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  I: ['.###.', '..#..', '..#..', '..#..', '..#..', '..#..', '.###.'],
+  J: ['..###', '...#.', '...#.', '...#.', '...#.', '#..#.', '.##..'],
+  K: ['#...#', '#..#.', '#.#..', '##...', '#.#..', '#..#.', '#...#'],
+  L: ['#....', '#....', '#....', '#....', '#....', '#....', '#####'],
+  M: ['#...#', '##.##', '#.#.#', '#.#.#', '#...#', '#...#', '#...#'],
+  N: ['#...#', '##..#', '#.#.#', '#..##', '#...#', '#...#', '#...#'],
+  O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+  P: ['####.', '#...#', '#...#', '####.', '#....', '#....', '#....'],
+  Q: ['.###.', '#...#', '#...#', '#...#', '#.#.#', '#..#.', '.##.#'],
+  R: ['####.', '#...#', '#...#', '####.', '#.#..', '#..#.', '#...#'],
+  S: ['.####', '#....', '#....', '.###.', '....#', '....#', '####.'],
+  T: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
+  U: ['#...#', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+  V: ['#...#', '#...#', '#...#', '#...#', '#...#', '.#.#.', '..#..'],
+  W: ['#...#', '#...#', '#...#', '#.#.#', '#.#.#', '##.##', '#...#'],
+  X: ['#...#', '.#.#.', '..#..', '..#..', '..#..', '.#.#.', '#...#'],
+  Y: ['#...#', '.#.#.', '..#..', '..#..', '..#..', '..#..', '..#..'],
+  Z: ['#####', '....#', '...#.', '..#..', '.#...', '#....', '#####'],
+  '0': ['.###.', '#...#', '#..##', '#.#.#', '##..#', '#...#', '.###.'],
+  '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
+  '2': ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],
+  '3': ['.###.', '#...#', '....#', '..##.', '....#', '#...#', '.###.'],
+  '4': ['...#.', '..##.', '.#.#.', '#..#.', '#####', '...#.', '...#.'],
+  '5': ['#####', '#....', '####.', '....#', '....#', '#...#', '.###.'],
+  '6': ['..##.', '.#...', '#....', '####.', '#...#', '#...#', '.###.'],
+  '7': ['#####', '....#', '...#.', '..#..', '..#..', '..#..', '..#..'],
+  '8': ['.###.', '#...#', '#...#', '.###.', '#...#', '#...#', '.###.'],
+  '9': ['.###.', '#...#', '#...#', '.####', '....#', '...#.', '.##..'],
+  '.': ['.....', '.....', '.....', '.....', '.....', '.##..', '.##..'],
+  ',': ['.....', '.....', '.....', '.....', '.##..', '..#..', '.#...'],
+  "'": ['..#..', '..#..', '.#...', '.....', '.....', '.....', '.....'],
+  '-': ['.....', '.....', '.....', '#####', '.....', '.....', '.....'],
+  ':': ['.....', '.##..', '.##..', '.....', '.##..', '.##..', '.....'],
+  ';': ['.....', '.##..', '.##..', '.....', '.##..', '..#..', '.#...'],
+  '!': ['..#..', '..#..', '..#..', '..#..', '..#..', '.....', '..#..'],
+  '?': ['.###.', '#...#', '....#', '...#.', '..#..', '.....', '..#..'],
+  '"': ['.#.#.', '.#.#.', '.#.#.', '.....', '.....', '.....', '.....'],
+  '(': ['...#.', '..#..', '.#...', '.#...', '.#...', '..#..', '...#.'],
+  ')': ['.#...', '..#..', '...#.', '...#.', '...#.', '..#..', '.#...'],
+  '$': ['..#..', '.####', '#.#..', '.###.', '..#.#', '####.', '..#..'],
+  '%': ['##...', '##..#', '...#.', '..#..', '.#...', '#..##', '...##'],
+  '&': ['.##..', '#..#.', '#.#..', '..#..', '#.#.#', '#..#.', '.#..#'],
+  '/': ['....#', '...#.', '...#.', '..#..', '.#...', '.#...', '#....'],
+  '+': ['.....', '..#..', '..#..', '#####', '..#..', '..#..', '.....'],
+  '=': ['.....', '.....', '#####', '.....', '#####', '.....', '.....'],
+  '@': ['.###.', '#...#', '#.###', '#.#.#', '#.###', '#....', '.###.'],
 };
 
-function drawChar(x, y, ch, scale, c, bold) {
-  if (ch === '—' || ch === '–') { rect(x, y + 3 * scale, 5 * scale, scale, c); return; }
-  const g = FONT[ch] || FONT['?'];
-  const off = bold ? Math.max(1, Math.round(scale / 3)) : 0;
-  for (let r = 0; r < 7; r++) for (let col = 0; col < 5; col++) {
-    if (g[r] & (1 << col)) {
-      rect(x + col * scale, y + r * scale, scale, scale, c);
-      if (off) rect(x + col * scale + off, y + r * scale, scale, scale, c);
-    }
-  }
+function stampGlyph(x, y, ch, size, ink, bold) {
+  if (ch === '—' || ch === '–') { bar(x, y + 3 * size, 5 * size, size, ink); return; }
+  const glyph = ROWS[ch] || ROWS['?'];
+  const extra = bold ? Math.max(1, Math.round(size / 3)) : 0;
+  glyph.forEach((row, r) => {
+    [...row].forEach((cell, col) => {
+      if (cell === '#') {
+        bar(x + col * size, y + r * size, size, size, ink);
+        if (extra) bar(x + col * size + extra, y + r * size, size, size, ink);
+      }
+    });
+  });
 }
 
-function textWidth(s, scale, tracking = 0) { return s.length * (6 * scale + tracking) - scale - tracking; }
+function measure(text, size, tracking = 0) {
+  return text.length * (6 * size + tracking) - size - tracking;
+}
 
-function drawText(x, y, s, scale, c, opts = {}) {
-  s = s.toUpperCase();
+function printLine(x, y, text, size, ink, opts = {}) {
+  const upper = text.toUpperCase();
   const tracking = opts.tracking || 0;
-  let cx = x;
-  if (opts.align === 'center') cx = Math.round((W - textWidth(s, scale, tracking)) / 2);
-  if (opts.align === 'right') cx = x - textWidth(s, scale, tracking);
-  for (const ch of s) { drawChar(cx, y, ch, scale, c, opts.bold); cx += 6 * scale + tracking; }
-  return 7 * scale;
-}
-
-function wrap(text, maxChars) {
-  const words = text.split(' ');
-  const lines = [];
-  let cur = '';
-  for (const w of words) {
-    if ((cur + ' ' + w).trim().length > maxChars && cur) { lines.push(cur); cur = w; }
-    else cur = (cur + ' ' + w).trim();
+  let pen = x;
+  if (opts.align === 'center') pen = Math.round((PAGE_W - measure(upper, size, tracking)) / 2);
+  if (opts.align === 'right') pen = x - measure(upper, size, tracking);
+  for (const ch of upper) {
+    stampGlyph(pen, y, ch, size, ink, opts.bold);
+    pen += 6 * size + tracking;
   }
-  if (cur) lines.push(cur);
-  return lines;
+  return 7 * size;
 }
 
-function drawBlock(x, y, text, scale, c, maxChars, lineH, opts = {}) {
-  const lines = wrap(text, maxChars);
-  lines.forEach((ln, i) => drawText(x, y + i * lineH, ln, scale, c, opts));
-  return lines.length * lineH;
+function fold(text, maxChars) {
+  const out = [];
+  let current = '';
+  for (const word of text.split(' ')) {
+    const trial = current ? current + ' ' + word : word;
+    if (trial.length > maxChars && current) { out.push(current); current = word; }
+    else current = trial;
+  }
+  if (current) out.push(current);
+  return out;
 }
 
-// ---- background ----
-rect(0, 0, W, H, PAPER);
-const M = 44;                 // page margin
-const IW = W - 2 * M;         // inner width = 936
-
-// ---- masthead ----
-drawText(0, 30, 'THE WORLD TODAY', 10, INK, { align: 'center', bold: true, tracking: 3 });
-rect(M, 110, IW, 5, ACCENT);
-rect(M, 119, IW, 2, INK);
-drawText(0, 130, 'TUESDAY 24 NOVEMBER 2026', 3, INK, { align: 'center', bold: true });
-drawText(M, 132, 'ONE DAY, ONE IMAGE', 2, BODY);
-drawText(W - M, 132, 'EST. 2026', 2, BODY, { align: 'right' });
-rect(M, 160, IW, 1, INK);
-
-// ---- lead story: COP31 collapse ----
-drawText(M, 174, 'CLIMATE — COP31, ANTALYA', 3, ACCENT, { bold: true });
-drawText(M, 202, 'COP31 TALKS COLLAPSE', 7, INK, { bold: true });
-drawText(M, 260, 'WITHOUT A DEAL', 7, INK, { bold: true });
-
-// lead illustration: dusk over the Antalya summit skyline, the low sun
-// split by a jagged crack, the nations' pennants hanging limp
-const IX = M, IY = 330, IWd = IW, IH = 196;
-clip = { x0: IX, y0: IY, x1: IX + IWd, y1: IY + IH };
-for (let yy = 0; yy < IH; yy++) rect(IX, IY + yy, IWd, 1, lerp(SKY_TOP, SKY_LOW, Math.min(1, yy / (IH * 0.85))));
-const sunX = IX + IWd * 0.66, sunY = IY + IH * 0.74, sunR = IH * 0.34;
-circle(sunX, sunY, sunR * 1.55, HALO, 0.30);
-circle(sunX, sunY, sunR, SUN);
-const crack = [[IX + 30, sunY - 26], [IX + 210, sunY - 8], [IX + 330, sunY - 30], [IX + 470, sunY + 2],
-               [IX + 590, sunY - 22], [IX + 730, sunY + 6], [IX + 850, sunY - 14], [IX + IWd - 24, sunY + 4]];
-for (let i = 0; i + 1 < crack.length; i++) line(crack[i][0], crack[i][1], crack[i + 1][0], crack[i + 1][1], 5, INK, 0.85);
-const base = IY + IH * 0.86;            // skyline baseline
-const blocks = [ // [x offset, width, height] along the horizon
-  [0, 70, 40], [66, 46, 60], [108, 84, 33], [188, 40, 76], [224, 96, 47], [316, 52, 63],
-  [364, 120, 38], [480, 56, 83], [532, 88, 43], [616, 44, 56], [656, 110, 35], [762, 58, 67], [816, 120, 42],
-];
-for (const [bx, bw, bh] of blocks) rect(IX + bx, base - bh, bw, bh, INK);
-circle(IX + 428, base - 38, 27, INK);   // conference dome
-rect(IX + 424, base - 86, 8, 48, INK);  // dome spire
-for (const mx of [206, 700]) {          // minarets
-  rect(IX + mx, base - 116, 9, 116, INK);
-  poly([[IX + mx - 5, base - 116], [IX + mx + 14, base - 116], [IX + mx + 4.5, base - 138]], INK);
+function printPara(x, y, text, size, ink, maxChars, leading, opts = {}) {
+  const lines = fold(text, maxChars);
+  lines.forEach((ln, i) => printLine(x, y + i * leading, ln, size, ink, opts));
+  return lines.length * leading;
 }
-rect(IX, base, IWd, IY + IH - base, INK); // foreground band
-for (let f = 0; f < 9; f++) {           // pennant flags hanging limp along the front band
-  const fx = IX + 60 + f * 102;
-  line(fx, base + 6, fx, base + 27, 3, PAPER);
-  poly([[fx, base + 6], [fx + 15, base + 8], [fx + 3, base + 17]], f % 2 ? PAPER : ACCENT);
-}
-clip = { x0: 0, y0: 0, x1: W, y1: H };
-rect(IX, IY, IWd, 2, INK); rect(IX, IY + IH - 2, IWd, 2, INK);
-rect(IX, IY, 2, IH, INK); rect(IX + IWd - 2, IY, 2, IH, INK);
 
-// lead summary
-drawBlock(M, 542,
+// ---------- page furniture ----------
+bar(0, 0, PAGE_W, PAGE_H, CREAM);
+const EDGE = 44;
+const SPAN = PAGE_W - 2 * EDGE;
+
+printLine(0, 30, 'THE WORLD TODAY', 10, SOOT, { align: 'center', bold: true, tracking: 3 });
+bar(EDGE, 110, SPAN, 5, EMBER);
+bar(EDGE, 119, SPAN, 2, SOOT);
+printLine(0, 130, 'TUESDAY 24 NOVEMBER 2026', 3, SOOT, { align: 'center', bold: true });
+printLine(EDGE, 132, 'ONE DAY, ONE IMAGE', 2, BODY_INK);
+printLine(PAGE_W - EDGE, 132, 'EST. 2026', 2, BODY_INK, { align: 'right' });
+bar(EDGE, 160, SPAN, 1, SOOT);
+
+// ---------- the lead: COP31 ends without a deal ----------
+printLine(EDGE, 174, 'CLIMATE — COP31, ANTALYA', 3, EMBER, { bold: true });
+printLine(EDGE, 202, 'COP31 TALKS COLLAPSE', 7, SOOT, { bold: true });
+printLine(EDGE, 260, 'WITHOUT A DEAL', 7, SOOT, { bold: true });
+
+// ---------- lead illustration: dusk over the Antalya skyline ----------
+// The sun hangs low and split; the summit's pennants hang limp.
+const ART = { x: EDGE, y: 330, w: SPAN, h: 196 };
+Object.assign(view, { left: ART.x, top: ART.y, right: ART.x + ART.w, bottom: ART.y + ART.h });
+for (let row = 0; row < ART.h; row++)
+  bar(ART.x, ART.y + row, ART.w, 1, blend(DAWN_HIGH, DAWN_LOW, Math.min(1, row / (ART.h * 0.85))));
+const sunCx = ART.x + ART.w * 0.66;
+const sunCy = ART.y + ART.h * 0.74;
+const sunR = ART.h * 0.34;
+disc(sunCx, sunCy, sunR * 1.55, GLOW, 0.30);
+disc(sunCx, sunCy, sunR, SUNSET);
+const crackPath = [[30, -26], [210, -8], [330, -30], [470, 2], [590, -22], [730, 6], [850, -14], [912, 4]];
+for (let i = 0; i + 1 < crackPath.length; i++)
+  seg(ART.x + crackPath[i][0], sunCy + crackPath[i][1], ART.x + crackPath[i + 1][0], sunCy + crackPath[i + 1][1], 5, SOOT, 0.85);
+const horizon = ART.y + ART.h * 0.86;
+const towers = [[0, 70, 40], [66, 46, 60], [108, 84, 33], [188, 40, 76], [224, 96, 47], [316, 52, 63],
+  [364, 120, 38], [480, 56, 83], [532, 88, 43], [616, 44, 56], [656, 110, 35], [762, 58, 67], [816, 120, 42]];
+for (const [off, wdt, hgt] of towers) bar(ART.x + off, horizon - hgt, wdt, hgt, SOOT);
+disc(ART.x + 428, horizon - 38, 27, SOOT);              // the conference dome
+bar(ART.x + 424, horizon - 86, 8, 48, SOOT);            // its spire
+for (const minaret of [206, 700]) {                     // two minarets
+  bar(ART.x + minaret, horizon - 116, 9, 116, SOOT);
+  shape([[ART.x + minaret - 5, horizon - 116], [ART.x + minaret + 14, horizon - 116], [ART.x + minaret + 4.5, horizon - 138]], SOOT);
+}
+bar(ART.x, horizon, ART.w, ART.y + ART.h - horizon, SOOT);   // foreground band
+for (let f = 0; f < 9; f++) {                                // limp pennants
+  const pole = ART.x + 60 + f * 102;
+  seg(pole, horizon + 6, pole, horizon + 27, 3, CREAM);
+  shape([[pole, horizon + 6], [pole + 15, horizon + 8], [pole + 3, horizon + 17]], f % 2 ? CREAM : EMBER);
+}
+Object.assign(view, { left: 0, top: 0, right: PAGE_W, bottom: PAGE_H });
+bar(ART.x, ART.y, ART.w, 2, SOOT); bar(ART.x, ART.y + ART.h - 2, ART.w, 2, SOOT);
+bar(ART.x, ART.y, 2, ART.h, SOOT); bar(ART.x + ART.w - 2, ART.y, 2, ART.h, SOOT);
+
+// ---------- lead summary ----------
+printPara(EDGE, 542,
   "TALKS RAN NEARLY 50 HOURS INTO OVERTIME, THE LONGEST IN COP HISTORY. THEN MORE THAN 90 NATIONS REJECTED A FINAL TEXT THAT NEVER MENTIONED FOSSIL FUELS, AND THE SUMMIT ENDED WITH NO DEAL — WHAT GRIST CALLED CLIMATE DIPLOMACY'S DARKEST MOMENT.",
-  2, BODY, 76, 17);
-rect(M, 618, IW, 2, INK);
+  2, BODY_INK, 76, 17);
+bar(EDGE, 618, SPAN, 2, SOOT);
 
-// ---- story boxes ----
-function icon(kind, x, y) {
+// ---------- story cards ----------
+function emblem(kind, x, y) {
   if (kind === 'ship') {
-    poly([[x + 2, y + 13], [x + 30, y + 13], [x + 25, y + 20], [x + 7, y + 20]], ACCENT);
-    rect(x + 9, y + 7, 14, 6, ACCENT);
-    rect(x + 20, y + 2, 3, 5, INK);
-    line(x + 2, y + 23, x + 9, y + 23, 2, INK); line(x + 13, y + 23, x + 20, y + 23, 2, INK); line(x + 24, y + 23, x + 31, y + 23, 2, INK);
+    shape([[x + 2, y + 13], [x + 30, y + 13], [x + 25, y + 20], [x + 7, y + 20]], EMBER);
+    bar(x + 9, y + 7, 14, 6, EMBER);
+    bar(x + 20, y + 2, 3, 5, SOOT);
+    for (const dash of [2, 13, 24]) seg(x + dash, y + 23, x + dash + 7, y + 23, 2, SOOT);
   } else if (kind === 'star') {
-    const pts = [];
+    const points = [];
     for (let i = 0; i < 10; i++) {
       const ang = -Math.PI / 2 + (i * Math.PI) / 5;
-      const r = i % 2 === 0 ? 11 : 4.6;
-      pts.push([x + 16 + Math.cos(ang) * r, y + 10 + Math.sin(ang) * r]);
+      const rad = i % 2 === 0 ? 11 : 4.6;
+      points.push([x + 16 + Math.cos(ang) * rad, y + 10 + Math.sin(ang) * rad]);
     }
-    poly(pts, ACCENT);
+    shape(points, EMBER);
   } else if (kind === 'alert') {
-    const pts = [[x, y + 12], [x + 6, y + 12], [x + 10, y + 3], [x + 15, y + 17], [x + 19, y + 7], [x + 23, y + 12], [x + 32, y + 12]];
-    for (let i = 0; i + 1 < pts.length; i++) line(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], 3, ACCENT);
-    line(x, y + 20, x + 32, y + 20, 2, INK);
+    const zig = [[0, 12], [6, 12], [10, 3], [15, 17], [19, 7], [23, 12], [32, 12]];
+    for (let i = 0; i + 1 < zig.length; i++) seg(x + zig[i][0], y + zig[i][1], x + zig[i + 1][0], y + zig[i + 1][1], 3, EMBER);
+    seg(x, y + 20, x + 32, y + 20, 2, SOOT);
   } else if (kind === 'chip') {
-    rect(x + 7, y + 3, 18, 17, INK);
-    rect(x + 11, y + 7, 10, 9, PAPER);
+    bar(x + 7, y + 3, 18, 17, SOOT);
+    bar(x + 11, y + 7, 10, 9, CREAM);
     for (const o of [0, 6, 12]) {
-      rect(x + 2, y + 5 + o, 5, 2, ACCENT); rect(x + 25, y + 5 + o, 5, 2, ACCENT);
-      rect(x + 10 + o, y, 2, 3, ACCENT); rect(x + 10 + o, y + 20, 2, 3, ACCENT);
+      bar(x + 2, y + 5 + o, 5, 2, EMBER); bar(x + 25, y + 5 + o, 5, 2, EMBER);
+      bar(x + 10 + o, y, 2, 3, EMBER); bar(x + 10 + o, y + 20, 2, 3, EMBER);
     }
   } else if (kind === 'globe') {
-    circle(x + 16, y + 11, 10, INK);
-    circle(x + 16, y + 11, 8, PAPER);
-    line(x + 8, y + 11, x + 24, y + 11, 2, ACCENT);
-    line(x + 16, y + 3, x + 16, y + 19, 2, ACCENT);
-    line(x + 10, y + 6, x + 22, y + 6, 1, ACCENT); line(x + 10, y + 16, x + 22, y + 16, 1, ACCENT);
+    disc(x + 16, y + 11, 10, SOOT);
+    disc(x + 16, y + 11, 8, CREAM);
+    seg(x + 8, y + 11, x + 24, y + 11, 2, EMBER);
+    seg(x + 16, y + 3, x + 16, y + 19, 2, EMBER);
+    seg(x + 10, y + 6, x + 22, y + 6, 1, EMBER); seg(x + 10, y + 16, x + 22, y + 16, 1, EMBER);
   }
 }
 
-function box(x, y, w, h, label, headline, summary, kind) {
-  rect(x, y, w, 2, INK); rect(x, y + h - 2, w, 2, INK);
-  rect(x, y, 2, h, INK); rect(x + w - 2, y, 2, h, INK);
-  drawText(x + 12, y + 11, label, 2, ACCENT, { bold: true });
-  icon(kind, x + w - 46, y + 8);
-  const headLines = drawBlock(x + 12, y + 30, headline, 3, INK, Math.floor((w - 24) / 18), 26, { bold: true });
-  drawBlock(x + 12, y + 30 + headLines + 4, summary, 2, BODY, Math.floor((w - 24) / 12), 16);
+function card(x, y, w, h, label, headline, summary, kind) {
+  bar(x, y, w, 2, SOOT); bar(x, y + h - 2, w, 2, SOOT);
+  bar(x, y, 2, h, SOOT); bar(x + w - 2, y, 2, h, SOOT);
+  printLine(x + 12, y + 11, label, 2, EMBER, { bold: true });
+  emblem(kind, x + w - 46, y + 8);
+  const headH = printPara(x + 12, y + 30, headline, 3, SOOT, Math.floor((w - 24) / 18), 26, { bold: true });
+  printPara(x + 12, y + 30 + headH + 4, summary, 2, BODY_INK, Math.floor((w - 24) / 12), 16);
 }
 
-const row1Y = 632, row1H = 170;
-box(M, row1Y, 460, row1H, 'WAR AT SEA — LIBYA', "UKRAINE SINKS RUSSIAN CORVETTE AT BENGHAZI",
+const topRowY = 632;
+card(EDGE, topRowY, 460, 170, 'WAR AT SEA — LIBYA', "UKRAINE SINKS RUSSIAN CORVETTE AT BENGHAZI",
   "SEVEN NAVAL DRONES SANK THE CORVETTE MERKURY AT BENGHAZI NAVAL BASE, OPENING A MEDITERRANEAN FRONT. THE UN SEEKS A PROBE AND WARNS LIBYA MUST NOT BECOME A BATTLEGROUND.", 'ship');
-box(M + 476, row1Y, 460, row1H, 'MIDDLE EAST — IRAN', "TRUMP WARNS IRAN OF 'TRAUMATIC' OUTCOME",
+card(EDGE + 476, topRowY, 460, 170, 'MIDDLE EAST — IRAN', "TRUMP WARNS IRAN OF 'TRAUMATIC' OUTCOME",
   "TRUMP WEIGHS SENDING A SECOND AIRCRAFT CARRIER AS NUCLEAR TALKS STALL, WHILE BRITAIN LOGS RECORD IRANIAN ATTACKS IN THE STRAIT OF HORMUZ AND QATAR MEDIATES.", 'star');
 
-const row2Y = 814, row2H = 164, bw2 = 302;
-box(M, row2Y, bw2, row2H, 'NATO — EUROPE', '25 RUSSIAN AIRSPACE VIOLATIONS',
-  'IN 2026. MISSILES AND A DRONE CRASHED IN POLAND.', 'alert');
-box(M + 317, row2Y, bw2, row2H, 'TECH — NVIDIA', 'HUANG BACK AT NVIDIA',
-  'REINSTATED AFTER TRUMP INTERVENED; SK HYNIX SHARES JUMP 20%.', 'chip');
-box(M + 634, row2Y, bw2, row2H, 'TRADE — INDONESIA', 'TRUMP SEALS INDONESIA DEAL',
-  'EU THREATENS $84 BILLION IN TARIFF RETALIATION AS TALKS STALL.', 'globe');
+const lowRowY = 814;
+const lowRow = [
+  ['NATO — EUROPE', '25 RUSSIAN AIRSPACE VIOLATIONS', 'IN 2026. MISSILES AND A DRONE CRASHED IN POLAND.', 'alert'],
+  ['TECH — NVIDIA', 'HUANG BACK AT NVIDIA', 'REINSTATED AFTER TRUMP INTERVENED; SK HYNIX SHARES JUMP 20%.', 'chip'],
+  ['TRADE — INDONESIA', 'TRUMP SEALS INDONESIA DEAL', 'EU THREATENS $84 BILLION IN TARIFF RETALIATION AS TALKS STALL.', 'globe'],
+];
+lowRow.forEach(([label, headline, summary, kind], i) =>
+  card(EDGE + i * 317, lowRowY, 302, 164, label, headline, summary, kind));
 
-// ---- footer ----
-rect(M, 990, IW, 1, INK);
-drawText(0, 998, "DRAWN BY AN AI AGENT FROM THE DAY'S WIRES", 2, BODY, { align: 'center' });
+// ---------- footer ----------
+bar(EDGE, 990, SPAN, 1, SOOT);
+printLine(0, 998, "DRAWN BY AN AI AGENT FROM THE DAY'S WIRES", 2, BODY_INK, { align: 'center' });
 
-// ---- PNG encoder ----
-const CRC_TABLE = (() => {
-  const t = new Int32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c;
-  }
-  return t;
-})();
-function crc32(buf) {
+// ---------- PNG writer ----------
+const crcTable = [];
+for (let n = 0; n < 256; n++) {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+  crcTable.push(c);
+}
+function crcOf(buf) {
   let c = 0xFFFFFFFF;
-  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xFF] ^ (c >>> 8);
+  for (const byte of buf) c = crcTable[(c ^ byte) & 0xFF] ^ (c >>> 8);
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
-function chunk(type, data) {
-  const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
-  const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
-  const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(td));
-  return Buffer.concat([len, td, crc]);
+function pngChunk(name, payload) {
+  const size = Buffer.alloc(4);
+  size.writeUInt32BE(payload.length);
+  const named = Buffer.concat([Buffer.from(name, 'ascii'), payload]);
+  const check = Buffer.alloc(4);
+  check.writeUInt32BE(crcOf(named));
+  return Buffer.concat([size, named, check]);
 }
-const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
-ihdr[8] = 8; ihdr[9] = 2; // 8-bit RGB
-const raw = Buffer.alloc((W * 3 + 1) * H);
-for (let y = 0; y < H; y++) {
-  raw[y * (W * 3 + 1)] = 0;
-  Buffer.from(img.buffer, y * W * 3, W * 3).copy(raw, y * (W * 3 + 1) + 1);
+const header = Buffer.alloc(13);
+header.writeUInt32BE(PAGE_W, 0);
+header.writeUInt32BE(PAGE_H, 4);
+header[8] = 8;   // bit depth
+header[9] = 2;   // truecolor RGB
+const scanlines = Buffer.alloc((PAGE_W * 3 + 1) * PAGE_H);
+for (let y = 0; y < PAGE_H; y++) {
+  const rowStart = y * (PAGE_W * 3 + 1);
+  scanlines[rowStart] = 0; // filter: none
+  Buffer.from(raster.buffer, y * PAGE_W * 3, PAGE_W * 3).copy(scanlines, rowStart + 1);
 }
-const png = Buffer.concat([
-  Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
-  chunk('IHDR', ihdr),
-  chunk('IDAT', deflateSync(raw, { level: 9 })),
-  chunk('IEND', Buffer.alloc(0)),
+const pngBytes = Buffer.concat([
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+  pngChunk('IHDR', header),
+  pngChunk('IDAT', deflateSync(scanlines, { level: 9 })),
+  pngChunk('IEND', Buffer.alloc(0)),
 ]);
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-mkdirSync(outDir, { recursive: true });
-writeFileSync(join(outDir, 'entry.png'), png);
-console.log('wrote', join(outDir, 'entry.png'), png.length, 'bytes');
+const targetDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+mkdirSync(targetDir, { recursive: true });
+writeFileSync(join(targetDir, 'entry.png'), pngBytes);
+console.log('wrote', join(targetDir, 'entry.png'), pngBytes.length, 'bytes');
