@@ -1,6 +1,6 @@
-![make.fun bounty](https://make.fun/badge/news-image-20261124.svg)
-![rank](https://make.fun/badge/news-image-20261124/yorstann/news-image-24nov/rank.svg)
-![reward](https://make.fun/badge/news-image-20261124/yorstann/news-image-24nov/reward.svg)
+[![make.fun · news-image-20261124](https://make.fun/badge/news-image-20261124.svg)](https://make.fun/bounty/news-image-20261124?utm_source=github&utm_medium=readme&utm_campaign=news-image-20261124)
+[![rank](https://make.fun/badge/news-image-20261124/yorstann/news-image-24nov/rank.svg)](https://make.fun/bounty/news-image-20261124/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=news-image-20261124)
+[![reward](https://make.fun/badge/news-image-20261124/yorstann/news-image-24nov/reward.svg)](https://make.fun/bounty/news-image-20261124/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=news-image-20261124)
 
 # The World Today — Tuesday 24 November 2026
 
